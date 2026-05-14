@@ -25,492 +25,58 @@ jobs:
       
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install pandas numpy plotly matplotlib seaborn tqdm
       
       - name: Parse parameters from issue
-        id: parse
         uses: actions/github-script@v7
+        id: parse
         with:
           script: |
             const body = context.payload.issue.body;
             
-            const extractValue = (label) => {
-              const lines = body.split('\n');
-              for (let i = 0; i < lines.length; i++) {
-                if (lines[i].includes(label) && lines[i+1] && !lines[i+1].includes('---')) {
-                  let value = lines[i+1].trim();
-                  if (value && !value.startsWith('#')) return value;
-                }
-              }
-              
-              // Alternative: look for pattern like "label: value"
-              const regex = new RegExp(`${label}[\\s]*[:\\n]+\\s*([^\\n]+)`, 'i');
-              const match = body.match(regex);
-              return match ? match[1].trim() : null;
-            };
-            
-            // Extract JSON block
-            const jsonMatch = body.match(/```json\\s*([\\s\\S]*?)\\s*```/);
-            let lociParams = {};
+            // Extract JSON block from issue
+            const jsonMatch = body.match(/```json\n([\s\S]*?)\n```/);
+            let params = {};
             if (jsonMatch) {
-              try {
-                lociParams = JSON.parse(jsonMatch[1]);
-              } catch(e) {
-                console.log('Failed to parse JSON:', e);
-              }
+              params = JSON.parse(jsonMatch[1]);
             }
             
-            const params = {
-              num_generations: parseInt(extractValue('Number of Generations')) || 500,
-              total_pop: parseInt(extractValue('Initial Population Size')) || 10000,
-              save_interval: parseInt(extractValue('Save Interval')) || 100,
-              c0: parseFloat(extractValue('Base Fitness')) || 1.0,
-              lambda_rate: parseFloat(extractValue('Overall Survival Rate')) || 0.8,
-              loci_names: extractValue('Locus Names') || 'A,B',
-              decimal_precision: parseInt(extractValue('Decimal Precision')) || 30,
-              loci_params: lociParams
-            };
-            
-            // Save to file
+            // Save params to file
             const fs = require('fs');
-            fs.writeFileSync('simulation_params.json', JSON.stringify(params, null, 2));
+            fs.writeFileSync('params.json', JSON.stringify(params, null, 2));
             
-            // Set outputs for later steps
-            core.setOutput('num_generations', params.num_generations);
-            core.setOutput('total_pop', params.total_pop);
-            core.setOutput('loci_names', params.loci_names);
-            
-            return params;
-      
-      - name: Display parameters
-        run: |
-          echo "📊 Simulation Parameters:"
-          cat simulation_params.json
-      
-      - name: Create simulation runner script
-        run: |
-          cat > run_simulation_auto.py << 'PYTHON_SCRIPT'
-          #!/usr/bin/env python3
-          import json
-          import csv
-          from decimal import Decimal, getcontext
-          from itertools import product
-          from tqdm import tqdm
-          
-          # Load parameters
-          with open('simulation_params.json', 'r') as f:
-              params = json.load(f)
-          
-          # Set precision
-          getcontext().prec = params['decimal_precision']
-          
-          # Basic parameters
-          NUM_GENERATIONS = params['num_generations']
-          TOTAL_POP = params['total_pop']
-          SAVE_INTERVAL = params['save_interval']
-          C0 = Decimal(str(params['c0']))
-          LAMBDA = Decimal(str(params['lambda_rate']))
-          LOCI = [l.strip() for l in params['loci_names'].split(',')]
-          
-          # Locus-specific parameters
-          EPSILON = {}
-          INIT_ALPHA = {}
-          INIT_MU0 = {}
-          MUTATION_EVENTS = {}
-          
-          for locus, locus_params in params['loci_params'].items():
-              EPSILON[locus] = Decimal(str(locus_params.get('epsilon', 0.1)))
-              INIT_ALPHA[locus] = Decimal(str(locus_params.get('alpha', 0.05)))
-              INIT_MU0[locus] = Decimal(str(locus_params.get('mu0', 0.0)))
-              MUTATION_EVENTS[locus] = locus_params.get('mutations', [])
-          
-          # Generate all possible genotypes
-          states_per_locus = []
-          for locus in LOCI:
-              dom = locus.upper()
-              rec = locus.lower()
-              states_per_locus.append([dom*2, dom+rec, rec*2])
-          
-          ALL_GENOTYPES = [''.join(combo) for combo in product(*states_per_locus)]
-          
-          def has_dominant(genotype_str, locus_idx):
-              start = locus_idx * 2
-              state = genotype_str[start:start+2]
-              rec_state = LOCI[locus_idx].lower() * 2
-              return 0 if state == rec_state else 1
-          
-          # Generate phenotype variants
-          phenotype_variants = []
-          for bits in product([0,1], repeat=len(LOCI)):
-              pheno = ''
-              for i, bit in enumerate(bits):
-                  pheno += LOCI[i] if bit else LOCI[i].lower()
-              phenotype_variants.append(pheno)
-          
-          def genotype_to_phenotype(genotype_str):
-              pheno = ''
-              for i, locus in enumerate(LOCI):
-                  if has_dominant(genotype_str, i) == 1:
-                      pheno += locus
-                  else:
-                      pheno += locus.lower()
-              return pheno
-          
-          def make_mutant_genotype(locus_idx):
-              mut = ''
-              for j, loc in enumerate(LOCI):
-                  if j == locus_idx:
-                      mut += loc.upper() + loc.lower()
-                  else:
-                      mut += loc.lower() * 2
-              return mut
-          
-          def get_initial_population():
-              N_i = {g: Decimal('0') for g in ALL_GENOTYPES}
-              all_rec = ''.join([locus.lower()*2 for locus in LOCI])
-              N_i[all_rec] = Decimal(str(TOTAL_POP))
-              return N_i
-          
-          class SimulationState:
-              def __init__(self, generation, N_total):
-                  self.generation = generation
-                  self.N_i = {}
-                  self.N_Total = N_total
-                  self.mu0 = {}
-                  self.alpha = {}
-                  self.mu_bar = {}
-                  self.p = {}
-                  self.C_bar = Decimal('0.0')
-                  self.f_i = {}
-                  self.R = {}
-              
-              def calculate_frequencies(self):
-                  if self.N_Total != Decimal('0'):
-                      for g in ALL_GENOTYPES:
-                          self.f_i[g] = self.N_i.get(g, Decimal('0')) / self.N_Total
-                  else:
-                      for g in ALL_GENOTYPES:
-                          self.f_i[g] = Decimal('0')
-              
-              def to_dict(self):
-                  self.calculate_frequencies()
-                  data = {'Generation': self.generation, 'N_Total': str(self.N_Total)}
-                  data['C0'] = str(C0)
-                  
-                  for locus in LOCI:
-                      data[f'mu0_{locus}'] = str(self.mu0.get(locus, Decimal('0')))
-                      data[f'alpha_{locus}'] = str(self.alpha.get(locus, Decimal('0')))
-                      data[f'mu_bar_{locus}'] = str(self.mu_bar.get(locus, Decimal('0')))
-                      data[f'p_{locus}'] = str(self.p.get(locus, Decimal('0')))
-                      data[f'epsilon_{locus}'] = str(EPSILON[locus])
-                      data[f'R_{locus}'] = str(self.R.get(locus, Decimal('1.0')))
-                      if self.C_bar != Decimal('0'):
-                          s = self.alpha[locus] / self.C_bar
-                      else:
-                          s = Decimal('0')
-                      data[f's_{locus}'] = str(s)
-                  
-                  data['C_bar'] = str(self.C_bar)
-                  
-                  phenotype_freqs = {p: Decimal('0') for p in phenotype_variants}
-                  for g in ALL_GENOTYPES:
-                      phen = genotype_to_phenotype(g)
-                      phenotype_freqs[phen] += self.f_i.get(g, Decimal('0'))
-                  for phen, freq in phenotype_freqs.items():
-                      data[f'f_{phen}'] = str(freq)
-                  
-                  var_fit = Decimal('0')
-                  for phen, freq in phenotype_freqs.items():
-                      c = C0
-                      for i, locus in enumerate(LOCI):
-                          if phen[i].isupper():
-                              c += self.alpha[locus]
-                      var_fit += freq * (c - self.C_bar) ** 2
-                  data['var_fitness'] = str(var_fit)
-                  
-                  return data
-          
-          def phase_1_analysis(current_state, previous_mu_bar):
-              new_alpha = {}
-              R_vals = {}
-              for i, locus in enumerate(LOCI):
-                  if current_state.generation == 0:
-                      mu0_t = INIT_MU0[locus]
-                      mu_bar_prev = INIT_MU0[locus]
-                  else:
-                      mu0_t = previous_mu_bar[locus]
-                      mu_bar_prev = previous_mu_bar[locus]
-                  
-                  current_state.mu0[locus] = mu0_t
-                  
-                  N_has_X = Decimal('0')
-                  for genotype_str, count in current_state.N_i.items():
-                      N_has_X += count * Decimal(has_dominant(genotype_str, i))
-                  N_no_X = current_state.N_Total - N_has_X
-                  
-                  mu_bar_t = (N_no_X * mu0_t + N_has_X * (mu0_t + EPSILON[locus])) / current_state.N_Total
-                  current_state.mu_bar[locus] = mu_bar_t
-                  
-                  if mu_bar_prev == Decimal('0'):
-                      progress_ratio = Decimal('1.0')
-                  else:
-                      progress_ratio = mu_bar_t / mu_bar_prev
-                  R_vals[locus] = progress_ratio
-                  
-                  alpha_t = current_state.alpha[locus]
-                  new_alpha[locus] = alpha_t * progress_ratio
-              
-              return new_alpha, R_vals
-          
-          def phase_2_reproduction(current_state):
-              p_t = {}
-              for i, locus in enumerate(LOCI):
-                  A_X = Decimal('0')
-                  T_X = Decimal('2') * current_state.N_Total
-                  for genotype_str, count in current_state.N_i.items():
-                      start = i*2
-                      state = genotype_str[start:start+2]
-                      if state == locus.upper()*2:
-                          allele_count = Decimal('2')
-                      elif state == locus.upper()+locus.lower():
-                          allele_count = Decimal('1')
-                      else:
-                          allele_count = Decimal('0')
-                      A_X += count * allele_count
-                  p_t[locus] = A_X / T_X
-                  current_state.p[locus] = p_t[locus]
-              
-              N_i_offspring = {}
-              for genotype_str in ALL_GENOTYPES:
-                  f_i = Decimal('1.0')
-                  for i, locus in enumerate(LOCI):
-                      p = p_t[locus]
-                      q = Decimal('1') - p
-                      start = i*2
-                      state = genotype_str[start:start+2]
-                      dom_state = locus.upper()*2
-                      het_state = locus.upper()+locus.lower()
-                      if state == dom_state:
-                          f_i *= (p ** Decimal('2'))
-                      elif state == het_state:
-                          f_i *= (Decimal('2') * p * q)
-                      else:
-                          f_i *= (q ** Decimal('2'))
-                  N_i_offspring[genotype_str] = current_state.N_Total * f_i
-              return N_i_offspring
-          
-          def phase_3_selection(current_state, N_i_offspring):
-              C_i = {}
-              for genotype_str in ALL_GENOTYPES:
-                  sum_alpha = Decimal('0')
-                  for i, locus in enumerate(LOCI):
-                      sum_alpha += current_state.alpha[locus] * Decimal(has_dominant(genotype_str, i))
-                  C_i[genotype_str] = C0 + sum_alpha
-              
-              sum_weighted_C = Decimal('0')
-              for genotype_str, count in N_i_offspring.items():
-                  sum_weighted_C += count * C_i[genotype_str]
-              C_bar = sum_weighted_C / current_state.N_Total
-              current_state.C_bar = C_bar
-              
-              N_i_after_selection = {}
-              for genotype_str, count_offspring in N_i_offspring.items():
-                  N_i_after_selection[genotype_str] = count_offspring * (C_i[genotype_str] / C_bar)
-              return N_i_after_selection
-          
-          def phase_4_dynamics(current_state, N_i_after_selection):
-              N_i_combined = {}
-              for genotype_str in ALL_GENOTYPES:
-                  N_i_combined[genotype_str] = current_state.N_i[genotype_str] + N_i_after_selection[genotype_str]
-              N_i_next = {}
-              N_Total_next = Decimal('0')
-              for genotype_str, count_combined in N_i_combined.items():
-                  N_next = LAMBDA * count_combined
-                  N_i_next[genotype_str] = N_next
-                  N_Total_next += N_next
-              return N_i_next, N_Total_next
-          
-          # Run simulation
-          print(f"Starting simulation: {NUM_GENERATIONS} generations, {len(LOCI)} loci")
-          
-          N_i_current = get_initial_population()
-          N_Total_current = Decimal(str(TOTAL_POP))
-          mu_bar_prev = INIT_MU0.copy()
-          alpha_current = INIT_ALPHA.copy()
-          
-          OUTPUT_FILENAME = "results.csv"
-          
-          temp_state = SimulationState(0, N_Total_current)
-          temp_state.mu0 = INIT_MU0.copy()
-          temp_state.alpha = INIT_ALPHA.copy()
-          temp_state.calculate_frequencies()
-          fieldnames = list(temp_state.to_dict().keys())
-          
-          with open(OUTPUT_FILENAME, 'w', newline='') as csvfile:
-              writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-              writer.writeheader()
-              
-              for t in tqdm(range(NUM_GENERATIONS + 1), desc="Simulating"):
-                  if N_Total_current == Decimal('0'):
-                      print("Population reached zero. Simulation stopped.")
-                      break
-                  
-                  # Apply mutations
-                  for i, locus in enumerate(LOCI):
-                      for count, gen in MUTATION_EVENTS.get(locus, []):
-                          if gen == t:
-                              mut_geno = make_mutant_genotype(i)
-                              wild_type_geno = ''.join([locus.lower()*2 for locus in LOCI])
-                              
-                              converted = 0
-                              for _ in range(count):
-                                  if N_i_current[wild_type_geno] > 0:
-                                      N_i_current[wild_type_geno] -= Decimal('1')
-                                      N_i_current[mut_geno] += Decimal('1')
-                                      converted += 1
-                                  else:
-                                      break
-                              
-                              print(f"Gen {t}: Converted {converted} individual(s) from {wild_type_geno} to {mut_geno}")
-                  
-                  current_state = SimulationState(t, N_Total_current)
-                  current_state.N_i = N_i_current
-                  current_state.alpha = alpha_current
-                  
-                  alpha_next, R_dict = phase_1_analysis(current_state, mu_bar_prev)
-                  current_state.R = R_dict
-                  current_state.alpha = alpha_next
-                  
-                  N_i_offspring = phase_2_reproduction(current_state)
-                  N_i_after_selection = phase_3_selection(current_state, N_i_offspring)
-                  N_i_next, N_Total_next = phase_4_dynamics(current_state, N_i_after_selection)
-                  
-                  if t % SAVE_INTERVAL == 0:
-                      writer.writerow(current_state.to_dict())
-                  
-                  mu_bar_prev = current_state.mu_bar.copy()
-                  alpha_current = alpha_next
-                  N_Total_current = N_Total_next
-                  N_i_current = N_i_next
-          
-          print(f"Simulation finished. Results saved to {OUTPUT_FILENAME}")
-          PYTHON_SCRIPT
+            console.log('Params saved:', params);
       
       - name: Run simulation
-        id: run_sim
         run: |
-          python3 run_simulation_auto.py
+          # Pass params.json to simulation.py
+          python simulation.py params.json
       
       - name: Generate plots
         run: |
-          python3 plot_results.py || echo "Plot generation completed"
+          python plot_results.py
       
       - name: Compress results
         run: |
-          mkdir -p simulation_results
-          cp results.csv simulation_results/ 2>/dev/null || echo "No results.csv found"
-          cp -r interactive_plots simulation_results/ 2>/dev/null || echo "No interactive_plots found"
-          cp -r static_plots simulation_results/ 2>/dev/null || echo "No static_plots found"
-          zip -r simulation_results.zip simulation_results/
+          zip -r results.zip results.csv interactive_plots/ static_plots/
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: simulation-results
-          path: simulation_results.zip
-          retention-days: 7
+          path: results.zip
       
-      - name: Post results to issue
+      - name: Comment on issue
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
             const runId = process.env.GITHUB_RUN_ID;
             const repo = context.repo;
-            const issueNumber = context.payload.issue.number;
-            
-            // Get parameters from saved file
-            let params = {};
-            try {
-              const paramsFile = fs.readFileSync('simulation_params.json', 'utf8');
-              params = JSON.parse(paramsFile);
-            } catch(e) {
-              console.log('Could not read params file');
-            }
-            
-            // Wait for artifact to be ready
-            await new Promise(resolve => setTimeout(resolve, 10000));
-            
-            // Get artifacts
-            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: repo.owner,
-              repo: repo.repo,
-              run_id: runId
-            });
-            
-            const artifact = artifacts.data.artifacts.find(a => a.name === 'simulation-results');
-            
-            let downloadUrl = '';
-            if (artifact) {
-              downloadUrl = `${repo.html_url}/actions/runs/${runId}/artifacts/${artifact.id}`;
-            }
-            
-            const commentBody = `
-  ## 🧬 Simulation Results Ready!
-  
-  ### Parameters Used:
-  | Parameter | Value |
-  |-----------|-------|
-  | Generations | ${params.num_generations || 'N/A'} |
-  | Population | ${params.total_pop || 'N/A'} |
-  | Loci | ${params.loci_names || 'N/A'} |
-  | Base Fitness (C0) | ${params.c0 || 'N/A'} |
-  | Survival Rate (λ) | ${params.lambda_rate || 'N/A'} |
-  | Save Interval | ${params.save_interval || 'N/A'} |
-  
-  ### 📥 Download Results
-  
-  [⬇️ Click here to download simulation_results.zip](${downloadUrl})
-  
-  ### Contents:
-  - \`results.csv\` - Raw simulation data
-  - \`interactive_plots/\` - Interactive HTML plots (Plotly)
-  - \`static_plots/\` - Static PNG images (Matplotlib/Seaborn)
-  
-  ### 📊 How to view:
-  1. Download the zip file
-  2. Extract to a folder
-  3. Open HTML files in any browser for interactive plots
-  4. Check PNG files for static images
-  
-  ---
-  ✨ Simulation completed by GitHub Actions
-  🔗 Workflow run: [${runId}](${repo.html_url}/actions/runs/${runId})
-            `;
+            const artifactUrl = `${repo.html_url}/actions/runs/${runId}`;
             
             await github.rest.issues.createComment({
-              issue_number: issueNumber,
+              issue_number: context.payload.issue.number,
               owner: repo.owner,
               repo: repo.repo,
-              body: commentBody
+              body: `## ✅ Simulation Complete!\n\n📥 [Download Results](${artifactUrl})\n\nResults include: results.csv, interactive plots, and static plots.`
             });
-            
-            // Update labels
-            await github.rest.issues.addLabels({
-              issue_number: issueNumber,
-              owner: repo.owner,
-              repo: repo.repo,
-              labels: ['simulation-completed']
-            });
-            
-            try {
-              await github.rest.issues.removeLabel({
-                issue_number: issueNumber,
-                owner: repo.owner,
-                repo: repo.repo,
-                name: 'pending'
-              });
-            } catch(e) {
-              console.log('No pending label to remove');
-            }
