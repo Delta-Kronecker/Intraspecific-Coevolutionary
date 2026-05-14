@@ -2,7 +2,7 @@ name: Run Evolutionary Simulation
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [opened]
 
 permissions:
   issues: write
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   run-simulation:
-    if: contains(github.event.issue.labels.*.name, 'simulation-request')
+    if: contains(github.event.issue.title, '[SIMULATION]')
     runs-on: ubuntu-latest
     
     steps:
@@ -27,47 +27,102 @@ jobs:
         run: |
           pip install pandas numpy plotly matplotlib seaborn tqdm
       
-      - name: Extract parameters from issue
+      - name: Extract parameters from issue body
         uses: actions/github-script@v7
         id: parse
         with:
           script: |
             const body = context.payload.issue.body;
-            const jsonMatch = body.match(/```json\n([\s\S]*?)\n```/);
+            
+            // Function to extract value by label
+            const extractValue = (label) => {
+              const lines = body.split('\n');
+              for (let i = 0; i < lines.length; i++) {
+                if (lines[i].includes(label) && lines[i+1] && !lines[i+1].startsWith('#')) {
+                  let value = lines[i+1].trim();
+                  if (value && !value.startsWith('---')) return value;
+                }
+              }
+              return null;
+            };
+            
+            // Extract JSON block
+            const jsonMatch = body.match(/```json\s*\n([\s\S]*?)\n```/);
+            let lociParams = {};
             
             if (jsonMatch) {
-              const params = JSON.parse(jsonMatch[1]);
-              const fs = require('fs');
-              fs.writeFileSync('params.json', JSON.stringify(params, null, 2));
-              console.log('✅ Parameters saved to params.json');
+              try {
+                lociParams = JSON.parse(jsonMatch[1]);
+                console.log('✅ JSON parsed successfully');
+              } catch(e) {
+                console.log('Failed to parse JSON:', e);
+              }
             } else {
-              console.log('❌ No JSON block found in issue');
-              process.exit(1);
+              console.log('⚠️ No JSON block found, trying to build from individual fields');
+              
+              // If no JSON block, build from individual fields
+              const lociNames = extractValue('Locus Names (comma-separated)');
+              if (lociNames) {
+                const loci = lociNames.split(',').map(l => l.trim());
+                for (const locus of loci) {
+                  lociParams[locus] = {
+                    epsilon: 0.0001,
+                    alpha: 0.001,
+                    mu0: 1.0,
+                    mutations: []
+                  };
+                }
+              }
             }
+            
+            // Build complete params object
+            const params = {
+              num_generations: parseInt(extractValue('Number of Generations')) || 10000,
+              total_pop: parseInt(extractValue('Initial Population Size')) || 10000,
+              save_interval: parseInt(extractValue('Save Interval')) || 10,
+              c0: parseFloat(extractValue('Base Fitness (C0)')) || 1.0,
+              lambda_rate: parseFloat(extractValue('Overall Survival Rate (λ)')) || 0.5,
+              loci_names: extractValue('Locus Names (comma-separated)') || 'A,B,C',
+              decimal_precision: parseInt(extractValue('Decimal Precision')) || 30,
+              loci_params: lociParams
+            };
+            
+            const fs = require('fs');
+            fs.writeFileSync('simulation_params.json', JSON.stringify(params, null, 2));
+            
+            console.log('✅ Parameters saved to simulation_params.json');
+            console.log('Params:', JSON.stringify(params, null, 2));
+      
+      - name: Display parameters
+        run: |
+          echo "📊 Simulation Parameters:"
+          cat simulation_params.json
       
       - name: Run simulation
         run: |
-          python simulation.py params.json
+          python simulation.py simulation_params.json
       
       - name: Generate plots
         run: |
-          python plot_results.py || echo "Plot generation skipped"
+          python plot_results.py || echo "Plot generation completed"
       
       - name: Compress results
         run: |
           mkdir -p simulation_results
-          cp results.csv simulation_results/ 2>/dev/null || true
-          cp -r interactive_plots simulation_results/ 2>/dev/null || true
-          cp -r static_plots simulation_results/ 2>/dev/null || true
-          cd simulation_results && zip -r ../results.zip . && cd ..
+          cp results.csv simulation_results/ 2>/dev/null || echo "No results.csv"
+          cp -r interactive_plots simulation_results/ 2>/dev/null || echo "No interactive_plots"
+          cp -r static_plots simulation_results/ 2>/dev/null || echo "No static_plots"
+          cd simulation_results && zip -r ../simulation_results.zip . && cd ..
+          ls -lh simulation_results.zip
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: simulation-results
-          path: results.zip
+          path: simulation_results.zip
+          retention-days: 7
       
-      - name: Post results to issue
+      - name: Add comment with download link
         uses: actions/github-script@v7
         with:
           script: |
@@ -75,36 +130,93 @@ jobs:
             const repo = context.repo;
             const issueNumber = context.payload.issue.number;
             
-            // Get artifact URL
-            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: repo.owner,
-              repo: repo.repo,
-              run_id: runId
-            });
+            // Get parameters for display
+            const fs = require('fs');
+            let params = {};
+            try {
+              const paramsFile = fs.readFileSync('simulation_params.json', 'utf8');
+              params = JSON.parse(paramsFile);
+            } catch(e) {
+              console.log('Could not read params file');
+            }
             
-            const artifact = artifacts.data.artifacts.find(a => a.name === 'simulation-results');
-            const downloadUrl = artifact ? `${repo.html_url}/actions/runs/${runId}/artifacts/${artifact.id}` : `${repo.html_url}/actions/runs/${runId}`;
+            // Wait for artifact
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            
+            // Get artifact URL
+            let downloadUrl = `${repo.html_url}/actions/runs/${runId}`;
+            try {
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: repo.owner,
+                repo: repo.repo,
+                run_id: runId
+              });
+              
+              const artifact = artifacts.data.artifacts.find(a => a.name === 'simulation-results');
+              if (artifact) {
+                downloadUrl = `${repo.html_url}/actions/runs/${runId}/artifacts/${artifact.id}`;
+              }
+            } catch(e) {
+              console.log('Could not get artifact URL');
+            }
+            
+            const commentBody = `## ✅ Simulation Complete!
+            
+### Parameters Used:
+| Parameter | Value |
+|-----------|-------|
+| Generations | ${params.num_generations || 'N/A'} |
+| Population | ${params.total_pop || 'N/A'} |
+| Loci | ${params.loci_names || 'N/A'} |
+| Base Fitness (C0) | ${params.c0 || 'N/A'} |
+| Survival Rate (λ) | ${params.lambda_rate || 'N/A'} |
+| Save Interval | ${params.save_interval || 'N/A'} |
+
+### 📥 Download Results
+
+[⬇️ Click here to download simulation_results.zip](${downloadUrl})
+
+### Contents:
+- **results.csv** - Raw simulation data
+- **interactive_plots/** - Interactive HTML plots (Plotly)
+- **static_plots/** - Static PNG images (Matplotlib/Seaborn)
+
+### How to view:
+1. Download and extract the zip file
+2. Open HTML files in any browser for interactive plots
+3. Check PNG files for static images
+
+---
+✨ Simulation completed by GitHub Actions
+🔗 Workflow run: ${runId}`;
             
             await github.rest.issues.createComment({
               issue_number: issueNumber,
               owner: repo.owner,
               repo: repo.repo,
-              body: `## ✅ Simulation Complete!\n\n### 📥 [Download Results](${downloadUrl})\n\n**Files included:**\n- \`results.csv\` - Raw simulation data\n- \`interactive_plots/\` - Interactive HTML plots\n- \`static_plots/\` - Static PNG images\n\n---\n🔗 Workflow run: ${runId}`
+              body: commentBody
             });
             
-            // Update labels
+            // Add completion label
             await github.rest.issues.addLabels({
               issue_number: issueNumber,
               owner: repo.owner,
               repo: repo.repo,
               labels: ['simulation-completed']
             });
+      
+      - name: Close issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = context.payload.issue.number;
             
-            try {
-              await github.rest.issues.removeLabel({
-                issue_number: issueNumber,
-                owner: repo.owner,
-                repo: repo.repo,
-                name: 'pending'
-              });
-            } catch(e) {}
+            await github.rest.issues.update({
+              issue_number: issueNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              state_reason: 'completed'
+            });
+            
+            console.log(`✅ Issue #${issueNumber} closed`);
