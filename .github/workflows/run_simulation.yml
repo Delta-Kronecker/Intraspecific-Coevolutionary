@@ -34,7 +34,6 @@ jobs:
           script: |
             const body = context.payload.issue.body;
             
-            // Function to extract value by label
             const extractValue = (label) => {
               const lines = body.split('\n');
               for (let i = 0; i < lines.length; i++) {
@@ -46,21 +45,18 @@ jobs:
               return null;
             };
             
-            // Extract JSON block
             const jsonMatch = body.match(/```json\s*\n([\s\S]*?)\n```/);
             let lociParams = {};
             
             if (jsonMatch) {
               try {
                 lociParams = JSON.parse(jsonMatch[1]);
-                console.log('✅ JSON parsed successfully');
+                console.log('JSON parsed successfully');
               } catch(e) {
                 console.log('Failed to parse JSON:', e);
               }
             } else {
-              console.log('⚠️ No JSON block found, trying to build from individual fields');
-              
-              // If no JSON block, build from individual fields
+              console.log('No JSON block found');
               const lociNames = extractValue('Locus Names (comma-separated)');
               if (lociNames) {
                 const loci = lociNames.split(',').map(l => l.trim());
@@ -75,7 +71,6 @@ jobs:
               }
             }
             
-            // Build complete params object
             const params = {
               num_generations: parseInt(extractValue('Number of Generations')) || 10000,
               total_pop: parseInt(extractValue('Initial Population Size')) || 10000,
@@ -90,12 +85,11 @@ jobs:
             const fs = require('fs');
             fs.writeFileSync('simulation_params.json', JSON.stringify(params, null, 2));
             
-            console.log('✅ Parameters saved to simulation_params.json');
-            console.log('Params:', JSON.stringify(params, null, 2));
+            console.log('Parameters saved to simulation_params.json');
       
       - name: Display parameters
         run: |
-          echo "📊 Simulation Parameters:"
+          echo "Simulation Parameters:"
           cat simulation_params.json
       
       - name: Run simulation
@@ -130,7 +124,6 @@ jobs:
             const repo = context.repo;
             const issueNumber = context.payload.issue.number;
             
-            // Get parameters for display
             const fs = require('fs');
             let params = {};
             try {
@@ -140,10 +133,8 @@ jobs:
               console.log('Could not read params file');
             }
             
-            // Wait for artifact
             await new Promise(resolve => setTimeout(resolve, 5000));
             
-            // Get artifact URL
             let downloadUrl = `${repo.html_url}/actions/runs/${runId}`;
             try {
               const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
@@ -160,35 +151,29 @@ jobs:
               console.log('Could not get artifact URL');
             }
             
-            const commentBody = `## ✅ Simulation Complete!
-            
-### Parameters Used:
-| Parameter | Value |
-|-----------|-------|
-| Generations | ${params.num_generations || 'N/A'} |
-| Population | ${params.total_pop || 'N/A'} |
-| Loci | ${params.loci_names || 'N/A'} |
-| Base Fitness (C0) | ${params.c0 || 'N/A'} |
-| Survival Rate (λ) | ${params.lambda_rate || 'N/A'} |
-| Save Interval | ${params.save_interval || 'N/A'} |
-
-### 📥 Download Results
-
-[⬇️ Click here to download simulation_results.zip](${downloadUrl})
-
-### Contents:
-- **results.csv** - Raw simulation data
-- **interactive_plots/** - Interactive HTML plots (Plotly)
-- **static_plots/** - Static PNG images (Matplotlib/Seaborn)
-
-### How to view:
-1. Download and extract the zip file
-2. Open HTML files in any browser for interactive plots
-3. Check PNG files for static images
-
----
-✨ Simulation completed by GitHub Actions
-🔗 Workflow run: ${runId}`;
+            const commentBody = '## Simulation Complete!\n\n' +
+            '### Parameters Used:\n\n' +
+            '| Parameter | Value |\n' +
+            '|-----------|-------|\n' +
+            '| Generations | ' + (params.num_generations || 'N/A') + ' |\n' +
+            '| Population | ' + (params.total_pop || 'N/A') + ' |\n' +
+            '| Loci | ' + (params.loci_names || 'N/A') + ' |\n' +
+            '| Base Fitness (C0) | ' + (params.c0 || 'N/A') + ' |\n' +
+            '| Survival Rate (λ) | ' + (params.lambda_rate || 'N/A') + ' |\n' +
+            '| Save Interval | ' + (params.save_interval || 'N/A') + ' |\n\n' +
+            '### Download Results\n\n' +
+            '[Click here to download simulation_results.zip](' + downloadUrl + ')\n\n' +
+            '### Contents:\n' +
+            '- results.csv - Raw simulation data\n' +
+            '- interactive_plots/ - Interactive HTML plots (Plotly)\n' +
+            '- static_plots/ - Static PNG images\n\n' +
+            '### How to view:\n' +
+            '1. Download and extract the zip file\n' +
+            '2. Open HTML files in any browser for interactive plots\n' +
+            '3. Check PNG files for static images\n\n' +
+            '---\n' +
+            'Simulation completed by GitHub Actions\n' +
+            'Workflow run: ' + runId;
             
             await github.rest.issues.createComment({
               issue_number: issueNumber,
@@ -197,7 +182,6 @@ jobs:
               body: commentBody
             });
             
-            // Add completion label
             await github.rest.issues.addLabels({
               issue_number: issueNumber,
               owner: repo.owner,
@@ -218,5 +202,3 @@ jobs:
               state: 'closed',
               state_reason: 'completed'
             });
-            
-            console.log(`✅ Issue #${issueNumber} closed`);
