@@ -27,6 +27,13 @@ jobs:
         run: |
           pip install pandas numpy plotly matplotlib seaborn tqdm
       
+      - name: Get current date and time
+        id: datetime
+        run: |
+          echo "TIMESTAMP=$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_OUTPUT
+          echo "DATE=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "FOLDER_NAME=$(date +'%Y%m%d_%H%M%S')_simulation" >> $GITHUB_OUTPUT
+      
       - name: Extract parameters from issue body
         uses: actions/github-script@v7
         id: parse
@@ -100,29 +107,67 @@ jobs:
         run: |
           python plot_results.py || echo "Plot generation completed"
       
-      - name: Compress results
+      - name: Create result folder with timestamp
         run: |
-          mkdir -p simulation_results
-          cp results.csv simulation_results/ 2>/dev/null || echo "No results.csv"
-          cp -r interactive_plots simulation_results/ 2>/dev/null || echo "No interactive_plots"
-          cp -r static_plots simulation_results/ 2>/dev/null || echo "No static_plots"
-          cd simulation_results && zip -r ../simulation_results.zip . && cd ..
-          ls -lh simulation_results.zip
+          FOLDER_NAME="${{ steps.datetime.outputs.FOLDER_NAME }}"
+          mkdir -p "results/$FOLDER_NAME"
+          mkdir -p "results/$FOLDER_NAME/data"
+          mkdir -p "results/$FOLDER_NAME/plots/html"
+          mkdir -p "results/$FOLDER_NAME/plots/png"
+          
+          echo "FOLDER_NAME=$FOLDER_NAME" >> $GITHUB_OUTPUT
+          echo "RESULT_PATH=results/$FOLDER_NAME" >> $GITHUB_OUTPUT
       
-      - name: Upload artifact
+      - name: Copy simulation results
+        run: |
+          RESULT_PATH="results/${{ steps.datetime.outputs.FOLDER_NAME }}"
+          
+          cp results.csv "$RESULT_PATH/data/" 2>/dev/null || echo "No results.csv"
+          cp simulation_params.json "$RESULT_PATH/data/" 2>/dev/null || echo "No params file"
+          
+          cp -r interactive_plots/* "$RESULT_PATH/plots/html/" 2>/dev/null || echo "No HTML plots"
+          cp -r static_plots/* "$RESULT_PATH/plots/png/" 2>/dev/null || echo "No PNG plots"
+          
+          echo "Files copied to $RESULT_PATH"
+      
+      - name: Create zip files
+        run: |
+          RESULT_PATH="results/${{ steps.datetime.outputs.FOLDER_NAME }}"
+          
+          cd "$RESULT_PATH"
+          zip -r "../${{ steps.datetime.outputs.FOLDER_NAME }}_data.zip" data/
+          zip -r "../${{ steps.datetime.outputs.FOLDER_NAME }}_html_plots.zip" plots/html/
+          zip -r "../${{ steps.datetime.outputs.FOLDER_NAME }}_png_plots.zip" plots/png/
+          zip -r "../${{ steps.datetime.outputs.FOLDER_NAME }}_all.zip" .
+          cd ../..
+          
+          ls -lh results/*.zip
+      
+      - name: Commit results to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add results/
+          git commit -m "Add simulation results from issue #${{ github.event.issue.number }} - ${{ steps.datetime.outputs.TIMESTAMP }}" || echo "No changes to commit"
+          git push
+      
+      - name: Upload all results as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-results
-          path: simulation_results.zip
+          name: simulation-all-results
+          path: results/simulation_results_*.zip
           retention-days: 7
       
-      - name: Add comment with download link
+      - name: Add comment with download links
         uses: actions/github-script@v7
         with:
           script: |
             const runId = process.env.GITHUB_RUN_ID;
             const repo = context.repo;
             const issueNumber = context.payload.issue.number;
+            const timestamp = '${{ steps.datetime.outputs.TIMESTAMP }}';
+            const folderName = '${{ steps.datetime.outputs.FOLDER_NAME }}';
             
             const fs = require('fs');
             let params = {};
@@ -133,23 +178,12 @@ jobs:
               console.log('Could not read params file');
             }
             
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            
-            let downloadUrl = `${repo.html_url}/actions/runs/${runId}`;
-            try {
-              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-                owner: repo.owner,
-                repo: repo.repo,
-                run_id: runId
-              });
-              
-              const artifact = artifacts.data.artifacts.find(a => a.name === 'simulation-results');
-              if (artifact) {
-                downloadUrl = `${repo.html_url}/actions/runs/${runId}/artifacts/${artifact.id}`;
-              }
-            } catch(e) {
-              console.log('Could not get artifact URL');
-            }
+            const repoUrl = `https://github.com/${repo.owner}/${repo.repo}`;
+            const resultsFolderUrl = `${repoUrl}/tree/main/results/${folderName}`;
+            const dataZipUrl = `${repoUrl}/raw/main/results/${folderName}_data.zip`;
+            const htmlZipUrl = `${repoUrl}/raw/main/results/${folderName}_html_plots.zip`;
+            const pngZipUrl = `${repoUrl}/raw/main/results/${folderName}_png_plots.zip`;
+            const allZipUrl = `${repoUrl}/raw/main/results/${folderName}_all.zip`;
             
             const commentBody = '## Simulation Complete!\n\n' +
             '### Parameters Used:\n\n' +
@@ -161,19 +195,27 @@ jobs:
             '| Base Fitness (C0) | ' + (params.c0 || 'N/A') + ' |\n' +
             '| Survival Rate (λ) | ' + (params.lambda_rate || 'N/A') + ' |\n' +
             '| Save Interval | ' + (params.save_interval || 'N/A') + ' |\n\n' +
-            '### Download Results\n\n' +
-            '[Click here to download simulation_results.zip](' + downloadUrl + ')\n\n' +
+            '### Results Folder\n\n' +
+            '📁 [View results folder on GitHub](' + resultsFolderUrl + ')\n\n' +
+            '### Download Links\n\n' +
+            '| File | Description |\n' +
+            '|------|-------------|\n' +
+            '| [📊 Download Data (CSV)](' + dataZipUrl + ') | Raw simulation data and parameters |\n' +
+            '| [📈 Download HTML Plots](' + htmlZipUrl + ') | Interactive Plotly visualizations |\n' +
+            '| [🖼️ Download PNG Plots](' + pngZipUrl + ') | Static matplotlib/seaborn images |\n' +
+            '| [📦 Download All Results](' + allZipUrl + ') | Complete package |\n\n' +
             '### Contents:\n' +
-            '- results.csv - Raw simulation data\n' +
-            '- interactive_plots/ - Interactive HTML plots (Plotly)\n' +
-            '- static_plots/ - Static PNG images\n\n' +
+            '- **data/results.csv** - Raw simulation data\n' +
+            '- **data/simulation_params.json** - Parameters used\n' +
+            '- **plots/html/** - Interactive HTML plots (Plotly)\n' +
+            '- **plots/png/** - Static PNG images\n\n' +
             '### How to view:\n' +
-            '1. Download and extract the zip file\n' +
+            '1. Download and extract any zip file\n' +
             '2. Open HTML files in any browser for interactive plots\n' +
             '3. Check PNG files for static images\n\n' +
             '---\n' +
-            'Simulation completed by GitHub Actions\n' +
-            'Workflow run: ' + runId;
+            '🕐 Execution time: ' + timestamp + '\n' +
+            '🔗 Workflow run: ' + `https://github.com/${repo.owner}/${repo.repo}/actions/runs/${runId}`;
             
             await github.rest.issues.createComment({
               issue_number: issueNumber,
