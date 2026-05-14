@@ -1,23 +1,12 @@
-name: 🧬 Run Evolutionary Simulation
+name: Request new simulation
 description: Request a new simulation run with custom parameters
 title: "[SIMULATION] Request new simulation"
-labels: ["simulation-request", "pending"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        ## 🧬 Multi-locus Evolutionary Simulation
-        
-        Fill out the parameters below. After submitting, GitHub Actions will automatically run the simulation and post the results as a downloadable zip file.
-        
-        ---
-
   - type: input
     id: num_generations
     attributes:
       label: Number of Generations
-      description: How many generations to simulate
-      placeholder: "500"
+      placeholder: "10000"
     validations:
       required: true
 
@@ -25,7 +14,6 @@ body:
     id: total_pop
     attributes:
       label: Initial Population Size
-      description: Total number of individuals at generation 0
       placeholder: "10000"
     validations:
       required: true
@@ -34,8 +22,7 @@ body:
     id: save_interval
     attributes:
       label: Save Interval
-      description: Save data every N generations
-      placeholder: "100"
+      placeholder: "10"
     validations:
       required: true
 
@@ -43,8 +30,7 @@ body:
     id: c0
     attributes:
       label: Base Fitness (C0)
-      description: Non-selective survival baseline
-      placeholder: "1.0"
+      placeholder: "1"
     validations:
       required: true
 
@@ -52,8 +38,7 @@ body:
     id: lambda_rate
     attributes:
       label: Overall Survival Rate (λ)
-      description: Population survival multiplier
-      placeholder: "0.8"
+      placeholder: "0.5"
     validations:
       required: true
 
@@ -61,7 +46,6 @@ body:
     id: loci_names
     attributes:
       label: Locus Names (comma-separated)
-      description: Single-letter names for each locus
       placeholder: "A,B,C"
     validations:
       required: true
@@ -70,11 +54,18 @@ body:
     id: loci_params
     attributes:
       label: Locus Parameters (JSON format)
-      description: |
-        Enter parameters for each locus:
-        ```json
+      placeholder: |
         {
-          "A": {"epsilon": 0.1, "alpha": 0.05, "mu0": 0.0, "mutations": [[10, 100], [5, 200]]},
-          "B": {"epsilon": 0.15, "alpha": 0.03, "mu0": 0.0, "mutations": []},
-          "C": {"epsilon": 0.08, "alpha": 0.04, "mu0": 0.0, "mutations": [[20, 50]]}
+          "A": {"epsilon": 0.0001, "alpha": 0.001, "mu0": 1.0, "mutations": [[1, 1000]]},
+          "B": {"epsilon": 0.0002, "alpha": 0.002, "mu0": 1.0, "mutations": [[1, 2000]]},
+          "C": {"epsilon": 0.0002, "alpha": 0.003, "mu0": 1.0, "mutations": [[1, 3000]]}
         }
+    validations:
+      required: true
+
+  - type: input
+    id: decimal_precision
+    attributes:
+      label: Decimal Precision
+      placeholder: "30"
+      default: "30"
