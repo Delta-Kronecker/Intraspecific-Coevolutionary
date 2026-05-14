@@ -1,0 +1,80 @@
+name: 🧬 Run Evolutionary Simulation
+description: Request a new simulation run with custom parameters
+title: "[SIMULATION] Request new simulation"
+labels: ["simulation-request", "pending"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🧬 Multi-locus Evolutionary Simulation
+        
+        Fill out the parameters below. After submitting, GitHub Actions will automatically run the simulation and post the results as a downloadable zip file.
+        
+        ---
+
+  - type: input
+    id: num_generations
+    attributes:
+      label: Number of Generations
+      description: How many generations to simulate
+      placeholder: "500"
+    validations:
+      required: true
+
+  - type: input
+    id: total_pop
+    attributes:
+      label: Initial Population Size
+      description: Total number of individuals at generation 0
+      placeholder: "10000"
+    validations:
+      required: true
+
+  - type: input
+    id: save_interval
+    attributes:
+      label: Save Interval
+      description: Save data every N generations
+      placeholder: "100"
+    validations:
+      required: true
+
+  - type: input
+    id: c0
+    attributes:
+      label: Base Fitness (C0)
+      description: Non-selective survival baseline
+      placeholder: "1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: lambda_rate
+    attributes:
+      label: Overall Survival Rate (λ)
+      description: Population survival multiplier
+      placeholder: "0.8"
+    validations:
+      required: true
+
+  - type: input
+    id: loci_names
+    attributes:
+      label: Locus Names (comma-separated)
+      description: Single-letter names for each locus
+      placeholder: "A,B,C"
+    validations:
+      required: true
+
+  - type: textarea
+    id: loci_params
+    attributes:
+      label: Locus Parameters (JSON format)
+      description: |
+        Enter parameters for each locus:
+        ```json
+        {
+          "A": {"epsilon": 0.1, "alpha": 0.05, "mu0": 0.0, "mutations": [[10, 100], [5, 200]]},
+          "B": {"epsilon": 0.15, "alpha": 0.03, "mu0": 0.0, "mutations": []},
+          "C": {"epsilon": 0.08, "alpha": 0.04, "mu0": 0.0, "mutations": [[20, 50]]}
+        }
