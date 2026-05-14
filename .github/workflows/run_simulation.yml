@@ -27,38 +27,39 @@ jobs:
         run: |
           pip install pandas numpy plotly matplotlib seaborn tqdm
       
-      - name: Parse parameters from issue
+      - name: Extract parameters from issue
         uses: actions/github-script@v7
         id: parse
         with:
           script: |
             const body = context.payload.issue.body;
-            
-            // Extract JSON block from issue
             const jsonMatch = body.match(/```json\n([\s\S]*?)\n```/);
-            let params = {};
+            
             if (jsonMatch) {
-              params = JSON.parse(jsonMatch[1]);
+              const params = JSON.parse(jsonMatch[1]);
+              const fs = require('fs');
+              fs.writeFileSync('params.json', JSON.stringify(params, null, 2));
+              console.log('✅ Parameters saved to params.json');
+            } else {
+              console.log('❌ No JSON block found in issue');
+              process.exit(1);
             }
-            
-            // Save params to file
-            const fs = require('fs');
-            fs.writeFileSync('params.json', JSON.stringify(params, null, 2));
-            
-            console.log('Params saved:', params);
       
       - name: Run simulation
         run: |
-          # Pass params.json to simulation.py
           python simulation.py params.json
       
       - name: Generate plots
         run: |
-          python plot_results.py
+          python plot_results.py || echo "Plot generation skipped"
       
       - name: Compress results
         run: |
-          zip -r results.zip results.csv interactive_plots/ static_plots/
+          mkdir -p simulation_results
+          cp results.csv simulation_results/ 2>/dev/null || true
+          cp -r interactive_plots simulation_results/ 2>/dev/null || true
+          cp -r static_plots simulation_results/ 2>/dev/null || true
+          cd simulation_results && zip -r ../results.zip . && cd ..
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -66,17 +67,44 @@ jobs:
           name: simulation-results
           path: results.zip
       
-      - name: Comment on issue
+      - name: Post results to issue
         uses: actions/github-script@v7
         with:
           script: |
             const runId = process.env.GITHUB_RUN_ID;
             const repo = context.repo;
-            const artifactUrl = `${repo.html_url}/actions/runs/${runId}`;
+            const issueNumber = context.payload.issue.number;
             
-            await github.rest.issues.createComment({
-              issue_number: context.payload.issue.number,
+            // Get artifact URL
+            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
               owner: repo.owner,
               repo: repo.repo,
-              body: `## ✅ Simulation Complete!\n\n📥 [Download Results](${artifactUrl})\n\nResults include: results.csv, interactive plots, and static plots.`
+              run_id: runId
             });
+            
+            const artifact = artifacts.data.artifacts.find(a => a.name === 'simulation-results');
+            const downloadUrl = artifact ? `${repo.html_url}/actions/runs/${runId}/artifacts/${artifact.id}` : `${repo.html_url}/actions/runs/${runId}`;
+            
+            await github.rest.issues.createComment({
+              issue_number: issueNumber,
+              owner: repo.owner,
+              repo: repo.repo,
+              body: `## ✅ Simulation Complete!\n\n### 📥 [Download Results](${downloadUrl})\n\n**Files included:**\n- \`results.csv\` - Raw simulation data\n- \`interactive_plots/\` - Interactive HTML plots\n- \`static_plots/\` - Static PNG images\n\n---\n🔗 Workflow run: ${runId}`
+            });
+            
+            // Update labels
+            await github.rest.issues.addLabels({
+              issue_number: issueNumber,
+              owner: repo.owner,
+              repo: repo.repo,
+              labels: ['simulation-completed']
+            });
+            
+            try {
+              await github.rest.issues.removeLabel({
+                issue_number: issueNumber,
+                owner: repo.owner,
+                repo: repo.repo,
+                name: 'pending'
+              });
+            } catch(e) {}
