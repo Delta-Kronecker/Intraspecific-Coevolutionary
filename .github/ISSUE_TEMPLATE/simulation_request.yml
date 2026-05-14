@@ -68,4 +68,5 @@ body:
     attributes:
       label: Decimal Precision
       placeholder: "30"
-      default: "30"
+    validations:
+      required: false
