@@ -1,0 +1,29 @@
+{
+  "num_generations": 10000,
+  "total_pop": 10000,
+  "save_interval": 10,
+  "c0": 1,
+  "lambda_rate": 0.5,
+  "loci_names": "A,B,C",
+  "decimal_precision": 30,
+  "loci_params": {
+    "A": {
+      "epsilon": 0.0001,
+      "alpha": 0.001,
+      "mu0": 1,
+      "mutations": []
+    },
+    "B": {
+      "epsilon": 0.0001,
+      "alpha": 0.001,
+      "mu0": 1,
+      "mutations": []
+    },
+    "C": {
+      "epsilon": 0.0001,
+      "alpha": 0.001,
+      "mu0": 1,
+      "mutations": []
+    }
+  }
+}
